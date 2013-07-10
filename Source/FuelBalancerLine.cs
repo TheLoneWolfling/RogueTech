@@ -16,7 +16,7 @@ public class FuelBalancerLine : PartModule
 	[KSPField]
 	public String ResourceName = "ElectricCharge";
 	[KSPField]
-	public float BalanceRatio = 0.5f;
+	public int Balance = 1;
 
 	[KSPAction("Activate Fuel Balancer")]
 	public void ActivateAction (KSPActionParam param)
@@ -49,14 +49,12 @@ public class FuelBalancerLine : PartModule
 				guiString = "Idle";
 			}
 			if (part is FuelLine) {
-				((FuelLine)part).flowDirection = FuelLine.FuelFlowDirection.AUTO;
+				if (Balance > 0) {
+					((FuelLine)part).flowDirection = FuelLine.FuelFlowDirection.AUTO;
+				}
 			} else {
 				SetState (false, "Part not fuel line");
 				// Only happens if someone messes up the config.
-				return;
-			}
-			if (BalanceRatio > 1 || BalanceRatio < 0) {
-				SetState (false, "Target balance out of range!");
 				return;
 			}
 			if (PartResourceLibrary.Instance.GetDefinition (ResourceName) == null) {
@@ -107,66 +105,74 @@ public class FuelBalancerLine : PartModule
 		bool resTransfered = false;
 		bool lowPower = false;
 		bool foundRes = false;
-		powerDraw = 0;
-		resourceFlow = 0;
 		double maxFlowThisTick = FlowRate * TimeWarp.fixedDeltaTime;
 		double minVisibleFlow = 0.000005 / TimeWarp.fixedDeltaTime;
+		powerDraw = 0;
+		resourceFlow = 0;
 		foreach (PartResource aPartRes in balA.Resources) {
-			if (aPartRes.info.resourceFlowMode != ResourceFlowMode.STACK_PRIORITY_SEARCH)
+			if (aPartRes.info.resourceFlowMode == ResourceFlowMode.NO_FLOW || aPartRes.info.density == 0) {
 				continue;
-			PartResource bPartRes = balB.Resources.Get(aPartRes.info.id);
-			if (bPartRes == null)
+			}
+			PartResource bPartRes = null;
+			foreach (PartResource bTemp in balB.Resources) {
+				if (aPartRes.resourceName == bTemp.resourceName) {
+					bPartRes = bTemp;
+				}
+			}
+			if (bPartRes == null) {
 				continue;
-
+			}
 			foundRes = true;
 
-			double total = aPartRes.amount + bPartRes.amount;
-			double cap = aPartRes.maxAmount + bPartRes.maxAmount;
+			double toTrans;
+			bool swap = false;
+			if (Balance > 0) {
+				PartResource less = aPartRes;
+				PartResource more = bPartRes;
+				if ((less.amount / less.maxAmount) > (more.amount / more.maxAmount)) {
+					PartResource temp = less;
+					less = more;
+					more = temp;
+					swap = true;
+				}
+				double total = less.amount + more.amount;
+				double cap = less.maxAmount + more.maxAmount;
+				double targetRatio = total / cap;
+				toTrans = Math.Min ((less.maxAmount * targetRatio) - less.amount, 
+				                    more.amount - (more.maxAmount * targetRatio));
 
-			double targetRatio = total / cap;
+			} else {
+				toTrans = -Math.Min (aPartRes.amount, bPartRes.maxAmount - bPartRes.amount);
+			}
+			if (toTrans > maxFlowThisTick) {
+				toTrans = maxFlowThisTick;
+			}
 
-			double aTargetRatio = BalanceRatio * targetRatio;
-			double bTargetRatio = (1 - BalanceRatio) * targetRatio;
-
-
-			double aTargetAmount = aPartRes.maxAmount * aTargetRatio;
-			double bTargetAmount = bPartRes.maxAmount * bTargetRatio;
-
-			double flowRequest = aTargetAmount - aPartRes.amount;
-
-			if (Math.Abs (bPartRes.amount - bTargetAmount) < Math.Abs (flowRequest))
-				flowRequest = bPartRes.amount - bTargetAmount;
-
-			if (Math.Abs (flowRequest) > maxFlowThisTick)
-				flowRequest = maxFlowThisTick * Math.Sign (flowRequest);
-
-			double resourceRequested = Math.Abs (flowRequest) * ResourceUsage;
+			double resourceRequested = toTrans * ResourceUsage;
 			double resourceUsed = part.RequestResource (ResourceName, resourceRequested);
-
 			powerDraw += (float) resourceUsed;
-
-			double actualFlow = resourceUsed / ResourceUsage * Math.Sign(flowRequest);
-
-			resourceFlow += (float) Math.Abs (actualFlow);
-			aPartRes.amount += actualFlow;	
-			bPartRes.amount -= actualFlow;
-
+			if (resourceUsed < resourceRequested) {
+				toTrans = resourceUsed / ResourceUsage; 
+			}
 			if (resourceRequested - resourceUsed > minVisibleFlow) // Ain't floating-point errors fun?
 				lowPower = true;
-			else if (Math.Abs (flowRequest) >= minVisibleFlow)
+			else if (toTrans >= minVisibleFlow)
 				resTransfered = true;
-
+			resourceFlow += (float) toTrans;
+			if (swap)
+				toTrans = -toTrans;
+			aPartRes.amount += toTrans;	
+			bPartRes.amount -= toTrans;
 		}
-
 		resourceFlow /= TimeWarp.fixedDeltaTime;
 		powerDraw /= TimeWarp.fixedDeltaTime;
-
 		if (!foundRes) {
 			SetState (false, "No transferable resources found!");
 			return;
 		}
-		if (lowPower)
+		if (lowPower) {
 			status = "Low " + ResourceName + "!";
+		}
 		else if (resTransfered)
 			status = "Active";
 		else
